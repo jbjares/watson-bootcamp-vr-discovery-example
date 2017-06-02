@@ -20,6 +20,9 @@ var express = require('express'); // app server
 var bodyParser = require('body-parser'); // parser for post requests
 var Conversation = require('watson-developer-cloud/conversation/v1'); // watson sdk
 var DiscoveryV1 = require('watson-developer-cloud/discovery/v1');
+var LanguageTranslator = require('watson-developer-cloud/language-translator/v2');
+var ToneAnalyzerV3 = require('watson-developer-cloud/tone-analyzer/v3');
+
 var app = express();
 
 // Bootstrap application settings
@@ -49,6 +52,19 @@ var discovery = new DiscoveryV1({
 	version_date: '2016-12-01'
 });
 
+var language_translator = new LanguageTranslator({
+	username: process.env.LANGUAGE_USERNAME,
+	password: process.env.LANGUAGE_PASSWORD,
+	version: 'v2',
+	url: "https://gateway.watsonplatform.net/language-translator/api"
+});
+
+var tone_analyzer = new ToneAnalyzerV3({
+	username:process.env.TONE_USERNAME,
+	password: process.env.TONE_PASSWORD,
+	version_date: "2016-05-19"
+});
+
 // Endpoint to be call from the client side
 app.post('/api/message', function (req, res) {
 	var workspace = process.env.WORKSPACE_ID || '<workspace-id>';
@@ -59,13 +75,45 @@ app.post('/api/message', function (req, res) {
 			}
 		});
 	}
+
+	language_translator.translate({
+		text: req.body.input ? req.body.input.text : null,
+		source: 'pt',
+		target: 'en'
+	}, function (err, translation) {
+
+		var english = translation && translation.translations[0] ?
+			translation.translations[0].translation : null;
+
+		if (english) {
+			tone_analyzer.tone({
+				text: english,
+				tones: "emotion"
+			}, function (err, tone) {
+
+				req.body.input.anger = tone.document_tone.tone_categories[0].tones[0].score;
+				req.body.input.disgust = tone.document_tone.tone_categories[0].tones[1].score;
+				req.body.input.fear = tone.document_tone.tone_categories[0].tones[2].score;
+				req.body.input.joy = tone.document_tone.tone_categories[0].tones[3].score;
+				req.body.input.sadness = tone.document_tone.tone_categories[0].tones[4].score;
+				message(workspace, req, res);
+			});
+
+		} else {
+			message(workspace, req, res);
+		}
+
+		// Send the input to the conversation service
+	});
+});
+
+function message(workspace, req, res) {
 	var payload = {
 		workspace_id: workspace,
 		context: req.body.context || {},
 		input: req.body.input || {}
 	};
 
-	// Send the input to the conversation service
 	conversation.message(payload, function (err, data) {
 		if (err) {
 			return res.status(err.code || 500).json(err);
@@ -74,7 +122,7 @@ app.post('/api/message', function (req, res) {
 		if (data.output.action && data.output.action.vr) {
 			var params = {
 				url: data.output.action.vr,
-				classifier_ids: ["fruit_2039462923"]
+				classifier_ids: [process.env.VR_CLASSIFIER]
 			};
 
 			visual_recognition.classify(params, function (err, vrResult) {
@@ -118,13 +166,11 @@ app.post('/api/message', function (req, res) {
 
 
 		}
-
 		else {
 			return res.json(updateMessage(payload, data));
 		}
 	});
-});
-
+}
 /**
  * Updates the response text using the intent confidence
  * @param  {Object} input The request to the Conversation service
